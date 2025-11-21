@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>カメラアプリ風キャプチャシステム</title>
+    <!-- Tailwind CSS CDNを読み込み -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* アプリ全体をフルスクリーンに近い形で設定 */
+        body {
+            /* 画面全体を占める */
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            margin: 0;
+            padding: 0;
+            overflow: hidden; /* スクロールを禁止 */
+        }
+        /* プレビューコンテナ */
+        .preview-wrapper {
+            flex-grow: 1; /* 残りのスペースを全て占める */
+            position: relative;
+            background-color: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+        }
+        /* ビデオ要素：ズームの基点となり、コンテナ内で中央に配置 */
+        #video-preview {
+            width: 100%;
+            height: 100%;
+            object-fit: cover; /* 画面を覆うように拡大 (ズームの起点) */
+            transform-origin: center center;
+            transition: transform 0.1s ease-out; /* ズームを滑らかにする */
+        }
+        /* ズームスライダーのカスタムスタイル */
+        #zoom-slider {
+            -webkit-appearance: none;
+            width: 100%;
+            height: 6px;
+            background: rgba(255, 255, 255, 0.4);
+            outline: none;
+            opacity: 0.8;
+            transition: opacity .2s;
+            border-radius: 3px;
+        }
+        #zoom-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 18px;
+            height: 18px;
+            background: #fff;
+            border: 2px solid #3b82f6; /* Blue-500 */
+            cursor: pointer;
+            border-radius: 50%;
+        }
+        /* ギャラリーモーダルのスクロール */
+        .gallery-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            max-height: 80vh;
+            overflow-y: auto;
+            padding: 10px;
+        }
+        .gallery-item {
+            aspect-ratio: 1 / 1;
+            width: 100%;
+            cursor: pointer;
+            object-fit: cover;
+            border-radius: 6px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+            transition: transform 0.1s;
+        }
+        .gallery-item:active {
+            transform: scale(0.95);
+        }
+    </style>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-black text-white font-sans">
+    
+    <!-- プレビューとズームコントロールエリア -->
+    <div class="preview-wrapper">
+        <video id="video-preview" autoplay playsinline muted class="transform scale-100"></video>
+
+        <!-- ステータスとエラーメッセージ表示エリア（オーバーレイ） -->
+        <div id="status-message" class="absolute top-0 left-0 right-0 p-3 text-center transition-all duration-300 hidden z-20 pointer-events-none">
+            <!-- メッセージはJSで挿入されます -->
+        </div>
+
+        <!-- ズームコントロール（プレビューの上部にオーバーレイ） -->
+        <div class="absolute top-4 w-full px-4 z-10">
+            <div id="zoom-control-container" class="bg-gray-800/70 p-3 rounded-lg shadow-xl max-w-sm mx-auto flex items-center space-x-3 hidden">
+                <span class="text-sm font-bold w-10 text-right">1x</span>
+                <input type="range" id="zoom-slider" min="1.0" max="4.0" step="0.1" value="1.0">
+                <span id="zoom-value-display" class="text-sm font-bold w-10 text-left">1.0x</span>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 固定フッター：モード切り替えと主要操作ボタン -->
+    <div class="fixed bottom-0 left-0 right-0 bg-gray-900/95 p-4 z-30 shadow-2xl">
+        
+        <!-- モード切替タブ -->
+        <div class="flex justify-center space-x-6 mb-4 text-lg font-semibold">
+            <button id="mode-photo" class="px-4 py-1 rounded-full transition duration-150 border border-transparent text-blue-400 border-blue-400">
+                写真
+            </button>
+            <button id="mode-record" class="px-4 py-1 rounded-full text-white/50 hover:text-white transition duration-150">
+                録音
+            </button>
+        </div>
+
+        <!-- コントロールボタン群 (中央シャッターボタンを含む) -->
+        <div class="flex items-center justify-between h-20">
+            
+            <!-- 左下: カメラ切替ボタン -->
+            <button id="switch-camera-btn" class="w-12 h-12 flex items-center justify-center rounded-full bg-gray-700 hover:bg-gray-600 transition duration-150 shadow-lg disabled:opacity-30">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+            </button>
+
+            <!-- 中央: メインアクションボタン (写真モード) -->
+            <div id="photo-controls" class="flex justify-center">
+                <button id="capture-image-btn" class="w-16 h-16 bg-white border-4 border-gray-400 rounded-full flex items-center justify-center transition duration-150 disabled:opacity-50 active:scale-90 hover:scale-105">
+                    <div class="w-12 h-12 bg-white rounded-full border border-gray-900"></div>
+                </button>
+            </div>
+            
+            <!-- 中央: メインアクションボタン (録音モード) -->
+            <div id="record-controls" class="flex justify-center hidden">
+                <!-- 録音開始ボタン -->
+                <button id="start-recording-btn" class="w-16 h-16 bg-red-600 border-4 border-red-300 rounded-full flex items-center justify-center transition duration-150 disabled:opacity-50 active:scale-90 hover:scale-105">
+                    <div class="w-12 h-12 bg-red-600 rounded-full border border-gray-900"></div>
+                </button>
+                <!-- 録音停止ボタン -->
+                <button id="stop-recording-btn" class="w-16 h-16 bg-gray-300 border-4 border-red-600 rounded-lg flex items-center justify-center transition duration-150 ml-4 disabled:opacity-50 hidden">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 text-red-600" fill="currentColor" viewBox="0 0 24 24"><path d="M5 5h14v14H5z"/></svg>
+                </button>
+            </div>
+
+            <!-- 右下: ギャラリーボタン -->
+            <button id="gallery-btn" class="w-12 h-12 flex items-center justify-center rounded-lg bg-gray-700 hover:bg-gray-600 transition duration-150 shadow-lg">
+                <span id="gallery-thumbnail" class="w-10 h-10 rounded-md bg-gray-500 flex items-center justify-center text-sm font-bold text-white overflow-hidden">
+                    0
+                </span>
+            </button>
+        </div>
+    </div>
+    
+    <!-- ギャラリーモーダル (初期状態は非表示) -->
+    <div id="gallery-modal" class="fixed inset-0 bg-black/95 z-40 hidden flex flex-col p-4">
+        <div class="flex justify-between items-center pb-4 border-b border-gray-700">
+            <h2 class="text-2xl font-bold">保存された写真 (タップで保存)</h2>
+            <button id="close-gallery-btn" class="p-2 text-white hover:text-gray-300">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+            </button>
+        </div>
+        <div id="gallery-container" class="gallery-grid mt-4">
+            <p class="text-gray-400 col-span-3 text-center">まだ写真がありません。</p>
+        </div>
+        <p class="text-center text-sm text-gray-400 mt-4">写真をタップ（またはクリック）すると、デバイスに保存されます。</p>
+    </div>
+
+    <!-- キャプチャ用キャンバス (非表示) -->
+    <canvas id="capture-canvas"></canvas>
+
+    <script>
+        // DOM要素の取得
+        const videoPreview = document.getElementById('video-preview');
+        const captureCanvas = document.getElementById('capture-canvas');
+        const statusMessage = document.getElementById('status-message');
+        const zoomSlider = document.getElementById('zoom-slider');
+        const zoomControlContainer = document.getElementById('zoom-control-container');
+        const zoomValueDisplay = document.getElementById('zoom-value-display');
+
+        const modePhoto = document.getElementById('mode-photo');
+        const modeRecord = document.getElementById('mode-record');
+        const photoControls = document.getElementById('photo-controls');
+        const recordControls = document.getElementById('record-controls');
+        
+        const captureImageBtn = document.getElementById('capture-image-btn');
+        const startRecordingBtn = document.getElementById('start-recording-btn');
+        const stopRecordingBtn = document.getElementById('stop-recording-btn');
+        const switchCameraBtn = document.getElementById('switch-camera-btn');
+        const galleryBtn = document.getElementById('gallery-btn');
+        const galleryModal = document.getElementById('gallery-modal');
+        const closeGalleryBtn = document.getElementById('close-gallery-btn');
+        const galleryContainer = document.getElementById('gallery-container');
+        const galleryThumbnail = document.getElementById('gallery-thumbnail');
+
+        // 状態変数
+        let currentStream = null;
+        let audioRecorder = null;
+        let audioChunks = [];
+        let videoDevices = [];
+        let currentCameraIndex = 0;
+        let currentMode = 'photo'; // 'photo' or 'record'
+        let capturedImages = []; // ギャラリー用のBlob URLとBlobデータを保存
+        let currentZoom = 1.0;
+
+        const APP_NAME = 'CameraApp';
+
+        // ======================================================
+        // UI/ステータス管理
+        // ======================================================
+        
+        /**
+         * ステータスメッセージを表示します。
+         * @param {string} message - 表示するメッセージ
+         * @param {string} type - 'success', 'error', 'info' のいずれか
+         */
+        function showStatus(message, type) {
+            statusMessage.textContent = message;
+            statusMessage.classList.remove('hidden', 'bg-red-500', 'bg-green-600', 'bg-blue-600');
+            statusMessage.classList.add('p-3', 'rounded-b-lg', 'font-bold', 'text-white', 'opacity-90');
+            
+            switch (type) {
+                case 'error':
+                    statusMessage.classList.add('bg-red-500');
+                    break;
+                case 'success':
+                    statusMessage.classList.add('bg-green-600');
+                    break;
+                case 'info':
+                default:
+                    statusMessage.classList.add('bg-blue-600');
+                    break;
+            }
+            // 3秒後にメッセージを非表示にする
+            setTimeout(() => {
+                statusMessage.classList.add('hidden');
+            }, 3000);
+        }
+
+        /**
+         * モード（写真/録音）を切り替えます。
+         * @param {string} mode - 'photo' または 'record'
+         */
+        function switchMode(mode) {
+            if (currentMode === mode) return; // 同じモードなら何もしない
+
+            currentMode = mode;
+            if (mode === 'photo') {
+                photoControls.classList.remove('hidden');
+                recordControls.classList.add('hidden');
+                
+                // 写真モードのスタイル
+                modePhoto.classList.add('border-blue-400', 'text-blue-400');
+                modePhoto.classList.remove('text-white/50', 'border-transparent');
+                
+                // 録音モードのスタイルをリセット
+                modeRecord.classList.remove('border-red-400', 'text-red-400');
+                modeRecord.classList.add('text-white/50', 'border-transparent');
+                
+                zoomControlContainer.classList.remove('hidden'); // 写真モードでズームを表示
+            } else { // 'record'
+                // 録音中の場合は切り替えを許可しない
+                if (audioRecorder && audioRecorder.state === 'recording') {
+                    showStatus('録音中はモードを切り替えられません。', 'error');
+                    return;
+                }
+                
+                photoControls.classList.add('hidden');
+                recordControls.classList.remove('hidden');
+                
+                // 録音モードのスタイル
+                modeRecord.classList.add('border-red-400', 'text-red-400');
+                modeRecord.classList.remove('text-white/50', 'border-transparent');
+                
+                // 写真モードのスタイルをリセット
+                modePhoto.classList.remove('border-blue-400', 'text-blue-400');
+                modePhoto.classList.add('text-white/50', 'border-transparent');
+                
+                zoomControlContainer.classList.add('hidden'); // 録音モードではズームを隠す
+                
+                // ズーム値をリセット
+                zoomSlider.value = 1.0;
+                updateZoom();
+            }
+        }
+
+        // ======================================================
+        // カメラ・デバイス操作
+        // ======================================================
+
+        /**
+         * 現在のメディアストリームを停止します。
+         */
+        function stopMediaStream(stream) {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+            }
+        }
+
+        /**
+         * 指定されたカメラIDでビデオストリームを開始します。
+         * @param {string} cameraId - 選択されたカメラデバイスのID
+         */
+        async function startCamera(cameraId) {
+            stopMediaStream(currentStream); // 既存のストリームを停止
+
+            try {
+                // オーディオはリクエストしない (無音撮影を保証)
+                const constraints = {
+                    video: {
+                        deviceId: cameraId ? { exact: cameraId } : undefined
+                    }
+                };
+                
+                showStatus('カメラを起動中...', 'info');
+                currentStream = await navigator.mediaDevices.getUserMedia(constraints);
+                
+                videoPreview.srcObject = currentStream;
+                videoPreview.onloadedmetadata = () => {
+                    videoPreview.play();
+                    showStatus('カメラプレビューを開始しました。', 'success');
+                    captureImageBtn.disabled = false;
+                };
+
+            } catch (err) {
+                console.error("カメラの起動に失敗しました: ", err);
+                showStatus(`カメラの起動に失敗しました: ${err.name}`, 'error');
+                captureImageBtn.disabled = true;
+            }
+        }
+
+        /**
+         * 利用可能なカメラデバイスを列挙し、初期カメラを起動します。
+         */
+        async function setupCameraDevices() {
+            try {
+                // 初回アクセス時に権限を要求するためにダミーのgetUserMediaを試みる
+                await navigator.mediaDevices.getUserMedia({ video: true }).then(stream => stopMediaStream(stream));
+
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                videoDevices = devices.filter(device => device.kind === 'videoinput');
+                
+                if (videoDevices.length === 0) {
+                    showStatus('カメラデバイスが見つかりませんでした。', 'error');
+                    switchCameraBtn.disabled = true;
+                    return;
+                }
+
+                if (videoDevices.length > 1) {
+                    switchCameraBtn.disabled = false;
+                } else {
+                    switchCameraBtn.disabled = true;
+                }
+
+                // 最初のデバイスでカメラを起動
+                await startCamera(videoDevices[currentCameraIndex].deviceId);
+
+            } catch (err) {
+                console.error("デバイスの列挙に失敗しました: ", err);
+                showStatus(`メディア権限の取得に失敗しました: ${err.name}`, 'error');
+                switchCameraBtn.disabled = true;
+            }
+        }
+
+        /**
+         * 次の利用可能なカメラに切り替えます。
+         */
+        function switchCamera() {
+            if (videoDevices.length <= 1) return;
+
+            currentCameraIndex = (currentCameraIndex + 1) % videoDevices.length;
+            const nextCameraId = videoDevices[currentCameraIndex].deviceId;
+            startCamera(nextCameraId);
+            
+            showStatus(`カメラを切り替えました: ${videoDevices[currentCameraIndex].label || 'Camera ' + (currentCameraIndex + 1)}`, 'info');
+        }
+
+        // ======================================================
+        // ズーム機能 (CSS transform: scale)
+        // ======================================================
+        
+        /**
+         * スライダーの値に基づいて、ビデオプレビューをCSSで拡大します。
+         */
+        function updateZoom() {
+            currentZoom = parseFloat(zoomSlider.value);
+            // CSSのtransformプロパティを更新して拡大
+            videoPreview.style.transform = `scale(${currentZoom})`;
+            zoomValueDisplay.textContent = `${currentZoom.toFixed(1)}x`;
+        }
+
+
+        // ======================================================
+        // ファイル操作 (キャプチャ/録音/ダウンロード)
+        // ======================================================
+
+        /**
+         * ファイルをBlobとしてダウンロードする汎用関数。
+         * @param {Blob} blob - ダウンロードするBlobデータ
+         * @param {string} filename - 保存時のファイル名
+         */
+        function downloadFile(blob, filename) {
+            // ダウンロードアクションを実行
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            
+            // 後処理
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        /**
+         * 無音で現在のビデオフレームをキャプチャし、ギャラリーに追加します。
+         */
+        function captureImage() {
+            if (!currentStream || videoPreview.paused) {
+                showStatus('カメラが起動していません。', 'error');
+                return;
+            }
+
+            // キャンバスのサイズを現在のビデオの解像度と一致させる
+            captureCanvas.width = videoPreview.videoWidth;
+            captureCanvas.height = videoPreview.videoHeight;
+            const ctx = captureCanvas.getContext('2d');
+            
+            // ビデオフレームをキャンバスに描画
+            ctx.drawImage(videoPreview, 0, 0, captureCanvas.width, captureCanvas.height);
+
+            // キャンバスからPNG画像データをBlobとして取得
+            captureCanvas.toBlob((blob) => {
+                if (blob) {
+                    const imageUrl = URL.createObjectURL(blob);
+                    capturedImages.push({ imageUrl, blob });
+                    updateGalleryThumbnail();
+                    showStatus('写真を撮りました！', 'success');
+                } else {
+                    showStatus('画像データの生成に失敗しました。', 'error');
+                }
+            }, 'image/png');
+        }
+        
+        /**
+         * 音声録音を開始します。
+         */
+        async function startRecording() {
+            try {
+                // ビデオとは別に、オーディオのみのストリームを取得
+                const audioConstraints = { audio: true }; 
+                const audioStream = await navigator.mediaDevices.getUserMedia(audioConstraints);
+
+                audioChunks = [];
+                // MediaRecorderの初期化
+                audioRecorder = new MediaRecorder(audioStream);
+
+                audioRecorder.ondataavailable = event => {
+                    audioChunks.push(event.data);
+                };
+
+                audioRecorder.onstop = () => {
+                    // 録音ストリームを停止
+                    stopMediaStream(audioStream);
+                    
+                    const mimeType = audioChunks[0]?.type || 'audio/webm';
+                    const audioBlob = new Blob(audioChunks, { type: mimeType });
+                    
+                    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                    const extension = mimeType.split('/')[1].split(';')[0];
+                    const filename = `${APP_NAME}_Audio_${timestamp}.${extension}`;
+                    
+                    downloadFile(audioBlob, filename);
+                    showStatus(`録音を停止し、'${filename}'として保存しました。`, 'success');
+                    
+                    // UIリセット
+                    startRecordingBtn.classList.remove('hidden');
+                    stopRecordingBtn.classList.add('hidden');
+                };
+
+                audioRecorder.start();
+                showStatus('🔴 録音中...', 'info');
+                
+                // UIの状態を更新
+                startRecordingBtn.classList.add('hidden');
+                stopRecordingBtn.classList.remove('hidden');
+
+            } catch (err) {
+                console.error("音声録音の開始に失敗しました: ", err);
+                showStatus(`録音の開始に失敗しました: ${err.name} (マイク権限を確認してください)`, 'error');
+            }
+        }
+        
+        /**
+         * 音声録音を停止し、ファイルを保存します。
+         */
+        function stopRecording() {
+            if (audioRecorder && audioRecorder.state === 'recording') {
+                audioRecorder.stop();
+            }
+        }
+
+        // ======================================================
+        // ギャラリー機能
+        // ======================================================
+
+        /**
+         * ギャラリーサムネイル（右下ボタン）を更新します。
+         */
+        function updateGalleryThumbnail() {
+            if (capturedImages.length > 0) {
+                // 最新の画像をサムネイルとして表示
+                const latestImage = capturedImages[capturedImages.length - 1];
+                galleryThumbnail.style.backgroundImage = `url(${latestImage.imageUrl})`;
+                galleryThumbnail.style.backgroundSize = 'cover';
+                galleryThumbnail.style.backgroundPosition = 'center';
+                galleryThumbnail.textContent = ''; 
+                galleryThumbnail.classList.remove('bg-gray-500');
+            } else {
+                // 画像がない場合は「0」を表示
+                galleryThumbnail.style.backgroundImage = 'none';
+                galleryThumbnail.textContent = '0';
+                galleryThumbnail.classList.add('bg-gray-500');
+            }
+        }
+
+        /**
+         * ギャラリーモーダルを開き、画像をレンダリングします。
+         */
+        function openGallery() {
+            galleryModal.classList.remove('hidden');
+            galleryContainer.innerHTML = '';
+            
+            if (capturedImages.length === 0) {
+                galleryContainer.innerHTML = '<p class="text-gray-400 col-span-3 text-center py-10">まだ写真がありません。</p>';
+                return;
+            }
+
+            // 新しい写真から表示するためにリバースループ
+            const imagesToShow = [...capturedImages].reverse();
+            
+            imagesToShow.forEach((imgData) => { 
+                const imgElement = document.createElement('img');
+                imgElement.src = imgData.imageUrl;
+                imgElement.alt = 'Captured Image';
+                imgElement.classList.add('gallery-item');
+                
+                // タップ/クリックで保存 (長押し要求への代替)
+                const saveHandler = () => {
+                    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                    const filename = `${APP_NAME}_GalleryImage_${timestamp}.png`;
+                    downloadFile(imgData.blob, filename);
+                    showStatus(`写真をデバイスに保存しました: ${filename}`, 'success');
+                };
+
+                // PCでのクリック、モバイルでのタップに対応
+                imgElement.addEventListener('click', saveHandler);
+                
+                galleryContainer.appendChild(imgElement);
+            });
+        }
+
+        /**
+         * ギャラリーモーダルを閉じます。
+         */
+        function closeGallery() {
+            galleryModal.classList.add('hidden');
+        }
+
+        // ======================================================
+        // イベントリスナーの設定と初期化
+        // ======================================================
+        
+        // モード切替
+        modePhoto.addEventListener('click', () => switchMode('photo'));
+        modeRecord.addEventListener('click', () => switchMode('record'));
+        
+        // カメラ操作
+        switchCameraBtn.addEventListener('click', switchCamera);
+        
+        // ズーム操作
+        zoomSlider.addEventListener('input', updateZoom);
+
+        // キャプチャ・録音
+        captureImageBtn.addEventListener('click', captureImage);
+        startRecordingBtn.addEventListener('click', startRecording);
+        stopRecordingBtn.addEventListener('click', stopRecording);
+        
+        // ギャラリー操作
+        galleryBtn.addEventListener('click', openGallery);
+        closeGalleryBtn.addEventListener('click', closeGallery);
+        
+        // アプリケーション起動時の初期化処理
+        document.addEventListener('DOMContentLoaded', () => {
+            setupCameraDevices();
+            switchMode('photo'); // 初期モードを写真に設定
+            updateZoom(); // 初回ズームをリセット (1.0x)
+            updateGalleryThumbnail();
+        });
+
+    </script>
+</body>
+</html>
